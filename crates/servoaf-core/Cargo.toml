@@ -1,0 +1,23 @@
+[package]
+name = "servoaf-core"
+description = "Platform-independent part of servoaf: MCP server and browser-control tools on Servo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+servo = { workspace = true }
+servo-base = { workspace = true }
+base64 = { workspace = true }
+crossbeam-channel = { workspace = true }
+euclid = { workspace = true }
+image = { workspace = true }
+log = { workspace = true }
+rand = { workspace = true }
+serde_json = { workspace = true }
+tiny_http = { workspace = true }
+url = { workspace = true }
+dpi = { workspace = true }
+serde = "1"

@@ -1,0 +1,22 @@
+[package]
+name = "servoaf"
+description = "Servo-based browser with a built-in MCP control server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+servoaf-core = { path = "../servoaf-core" }
+servo = { workspace = true }
+dpi = { workspace = true }
+env_logger = { workspace = true }
+euclid = { workspace = true }
+log = { workspace = true }
+rustls = { workspace = true }
+url = { workspace = true }
+winit = { workspace = true }
+gleam = "0.15"
+crossbeam-channel = { workspace = true }
+ctrlc = { version = "3", features = ["termination"] }

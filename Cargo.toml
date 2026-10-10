@@ -1,0 +1,30 @@
+[workspace]
+resolver = "2"
+members = ["crates/servoaf-core", "crates/servoaf"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MPL-2.0"
+repository = "https://github.com/ondbyte/servoaf"
+rust-version = "1.88.0"
+
+[workspace.dependencies]
+servo = { version = "0.7.0" }
+servo-base = { version = "0.7.0" }
+base64 = "0.22"
+crossbeam-channel = "0.5"
+euclid = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+log = "0.4"
+rand = "0.8"
+serde_json = "1"
+tiny_http = "0.12"
+url = "2.5"
+winit = "0.30.13"
+dpi = "0.1"
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "std", "tls12", "logging"] }
+env_logger = "0.11"
+
+[profile.release]
+debug = false
