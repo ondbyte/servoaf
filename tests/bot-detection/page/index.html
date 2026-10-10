@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>servoaf bot-detection suite</title>
+<style>
+  body { font: 14px/1.4 monospace; margin: 24px; }
+  #pad { height: 2600px; }
+  .surface { width: 600px; height: 300px; background: #f0f0f0; border: 1px solid #999; }
+  pre { white-space: pre-wrap; word-break: break-all; }
+  button, input { font: inherit; padding: 6px 10px; margin: 6px 0; }
+</style>
+</head>
+<body>
+<h1>servoaf bot-detection suite</h1>
+<p>This page runs industry-standard, non-CAPTCHA bot/automation detectors and
+our own checks, then reports a verdict. It is driven by servoaf's MCP tools.</p>
+
+<div class="surface" id="surface">move the pointer over here</div>
+<input id="field" placeholder="type here">
+<button id="finish">compute behavioral verdict</button>
+
+<h2>static detectors</h2>
+<pre id="result">RESULT_B64 pending</pre>
+<h2>behavioral</h2>
+<pre id="behavior">BEHAVIOR_B64 pending</pre>
+<div id="pad"></div>
+
+<script>
+// Classic script (runs even if the module below fails to load) that surfaces
+// any error into #result so the driver sees it instead of timing out.
+function surface(msg) {
+  var el = document.getElementById("result");
+  if (el && el.textContent.indexOf("RESULT_B64 pending") === 0) {
+    el.textContent = "RESULT_B64 " + btoa(unescape(encodeURIComponent(
+      JSON.stringify({ done: true, error: String(msg), suites: [] }))));
+  }
+}
+window.addEventListener("error", function (e) {
+  surface((e.error && e.error.stack) || e.message || (e.filename + ":" + e.lineno));
+});
+window.addEventListener("unhandledrejection", function (e) {
+  surface("unhandledrejection: " + ((e.reason && e.reason.stack) || e.reason));
+});
+</script>
+
+<script type="module">
+import { load } from "../vendor/botd/botd.esm.js";
+import FingerprintScanner from "../vendor/fpscanner/fpScanner.es.js";
+import { isbot } from "../vendor/isbot/isbot.mjs";
+import { ownChecks, analyzeMotion, syntheticRoboticMotion } from "./checks.js";
+
+const suite = (name, flagged, detail) => ({ name, flagged: !!flagged, detail: detail ?? null });
+
+// Record every trusted pointer/scroll/key event for the behavioral analyzer.
+const moves = [];
+const t0 = performance.now();
+addEventListener("mousemove", (e) => moves.push({ type: "mousemove", x: e.clientX, y: e.clientY, t: performance.now() - t0, trusted: e.isTrusted }), true);
+let clicks = 0, keys = 0, scrolls = 0;
+addEventListener("click", (e) => { if (e.isTrusted) clicks++; }, true);
+addEventListener("keydown", (e) => { if (e.isTrusted) keys++; }, true);
+addEventListener("scroll", () => { scrolls++; }, true);
+
+function write(id, obj) {
+  const tag = id === "result" ? "RESULT_B64" : "BEHAVIOR_B64";
+  // base64 so the single token survives text extraction without whitespace
+  // normalization corrupting it.
+  const b64 = btoa(unescape(encodeURIComponent(JSON.stringify(obj))));
+  document.getElementById(id).textContent = tag + " " + b64;
+}
+
+async function runStatic() {
+  const suites = [];
+
+  // --- Fingerprint BotD ---
+  let botd = null;
+  try {
+    const detector = await load({ monitoring: false });
+    const res = detector.detect();
+    suites.push(suite("botd", res.bot === true, res));
+    botd = detector;
+  } catch (e) {
+    suites.push({ name: "botd", errored: String(e), flagged: false, detail: null });
+  }
+
+  // --- BotD negative control: force the webDriver component true, must flag ---
+  try {
+    if (botd) {
+      const components = botd.getComponents();
+      components.webDriver = { value: true, state: 0 };
+      const forced = botd.detect();
+      suites.push({ name: "control:botd-webdriver", flagged: forced.bot === true, expect: true, detail: forced });
+    }
+  } catch (e) {
+    suites.push({ name: "control:botd-webdriver", errored: String(e), flagged: false, expect: true });
+  }
+
+  // --- fpscanner ---
+  try {
+    const fp = await new FingerprintScanner().collectFingerprint({ encrypt: false });
+    const details = fp.fastBotDetectionDetails || {};
+    const hits = Object.entries(details).filter(([, v]) => v && v.detected).map(([k, v]) => ({ k, severity: v.severity }));
+    suites.push(suite("fpscanner", fp.fastBotDetection === true, { fastBotDetection: fp.fastBotDetection, hits }));
+  } catch (e) {
+    suites.push({ name: "fpscanner", errored: String(e), flagged: false, detail: null });
+  }
+
+  // --- isbot over the UA ---
+  try {
+    suites.push(suite("isbot", isbot(navigator.userAgent) === true, { ua: navigator.userAgent }));
+  } catch (e) {
+    suites.push({ name: "isbot", errored: String(e), flagged: false, detail: null });
+  }
+
+  // --- our own checks ---
+  for (const c of ownChecks()) suites.push({ name: "own:" + c.name, flagged: c.flagged, detail: c.detail });
+
+  write("result", { done: true, ua: navigator.userAgent, suites });
+}
+
+document.getElementById("finish").addEventListener("click", () => {
+  const suites = [];
+  // Real recorded human-like motion must NOT be flagged.
+  suites.push(analyzeMotion(moves));
+  // Negative control: perfectly linear, constant-cadence motion MUST flag.
+  const robotic = analyzeMotion(syntheticRoboticMotion());
+  suites.push({ name: "control:behavior-robotic", flagged: robotic.flagged, expect: true, detail: robotic.detail });
+  write("behavior", { done: true, counts: { moves: moves.length, clicks, keys, scrolls }, suites });
+});
+
+runStatic().catch(function (e) { surface((e && e.stack) || e); });
+</script>
+</body>
+</html>

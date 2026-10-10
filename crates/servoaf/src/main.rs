@@ -31,6 +31,7 @@ usage: servoaf [options] [URL]
   --size WxH                Window/viewport size in CSS px (default 1280x800)
   --user-data-dir DIR       Keep cookies and storage in DIR (default: temporary)
   --no-cursor-overlay       Don't draw the agent's pointer in the window
+  --no-webdriver-shim       Don't define navigator.webdriver=false (leave it unset like Servo)
   --auto-dismiss-dialogs    Accept alerts, cancel confirm/prompt automatically
   --tool-timeout SECONDS    Give up on a tool call after this long (default 120)
   -h, --help                Show this help
@@ -134,6 +135,7 @@ fn parse_args() -> Result<Options, String> {
             },
             "--user-data-dir" => options.user_data_dir = Some(PathBuf::from(value("a directory")?)),
             "--no-cursor-overlay" => options.config.cursor_overlay = false,
+            "--no-webdriver-shim" => options.config.mimic_real_browser = false,
             "--auto-dismiss-dialogs" => options.config.auto_dismiss_dialogs = true,
             "--tool-timeout" => {
                 let seconds: u64 = value("seconds")?.parse().map_err(|_| "invalid --tool-timeout")?;

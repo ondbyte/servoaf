@@ -12,8 +12,9 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::Receiver;
 use euclid::Scale;
 use servo::{
-    DeviceIndependentPixel, DevicePixel, DevicePoint, EmbedderControl, EmbedderControlId, LoadStatus,
-    RenderingContext, Servo, SimpleDialog, WebView, WebViewBuilder, WebViewDelegate,
+    DeviceIndependentPixel, DeviceIntRect, DeviceIntSize, DevicePixel, DevicePoint, EmbedderControl,
+    EmbedderControlId, LoadStatus, RenderingContext, ScreenGeometry, Servo, SimpleDialog, UserContentManager,
+    UserScript, WebView, WebViewBuilder, WebViewDelegate,
 };
 use url::Url;
 
@@ -35,12 +36,23 @@ pub struct BrowserConfig {
     pub auto_dismiss_dialogs: bool,
     /// Draw the agent's pointer on top of the page (headed mode).
     pub cursor_overlay: bool,
+    /// Ship a small built-in user script so the browser matches the one its
+    /// user agent claims to be: define `navigator.webdriver = false` (the
+    /// WebDriver spec requires the property; Servo does not implement it yet,
+    /// and its absence lets automation-detection libraries flag the browser).
+    /// On by default; pages see a normal, non-automated Firefox-family browser.
+    pub mimic_real_browser: bool,
     pub tool_timeout: Duration,
 }
 
 impl Default for BrowserConfig {
     fn default() -> Self {
-        Self { auto_dismiss_dialogs: false, cursor_overlay: true, tool_timeout: Duration::from_secs(120) }
+        Self {
+            auto_dismiss_dialogs: false,
+            cursor_overlay: true,
+            mimic_real_browser: true,
+            tool_timeout: Duration::from_secs(120),
+        }
     }
 }
 
@@ -138,11 +150,30 @@ pub struct Browser {
     title_changed: Cell<bool>,
     pub dialogs: RefCell<Vec<Dialog>>,
     next_dialog_id: Cell<u32>,
+    /// Built-in user content (the webdriver-correctness script), shared by all
+    /// tabs. `None` when `mimic_real_browser` is off.
+    user_content: RefCell<Option<Rc<UserContentManager>>>,
     myself: Weak<Browser>,
     runtime: Runtime,
     protocol: McpProtocol<Browser>,
     requests: Receiver<McpRequest>,
 }
+
+/// Defines `navigator.webdriver` as a read-only `false`, matching real
+/// browsers and the WebDriver specification. Servo does not implement the
+/// property, and its absence is a signal automation-detection libraries use.
+/// Shipped as a built-in user script that runs before page scripts; it is the
+/// browser behaving like the one its user agent claims to be, not the MCP
+/// layer acting on a page.
+const WEBDRIVER_SHIM: &str = r#"(function () {
+  try {
+    var proto = window.Navigator && window.Navigator.prototype;
+    if (!proto) return;
+    var d = Object.getOwnPropertyDescriptor(proto, 'webdriver');
+    if (d && typeof d.get === 'function') return; // already a getter
+    Object.defineProperty(proto, 'webdriver', { get: function () { return false; }, configurable: true });
+  } catch (e) {}
+})();"#;
 
 impl Browser {
     pub fn new(
@@ -166,6 +197,7 @@ impl Browser {
             title_changed: Cell::new(true),
             dialogs: Default::default(),
             next_dialog_id: Cell::new(1),
+            user_content: RefCell::new(None),
             myself: myself.clone(),
             runtime: Runtime::default(),
             protocol,
@@ -183,6 +215,20 @@ impl Browser {
 
     fn delegate(&self) -> Rc<dyn WebViewDelegate> {
         Rc::new(Delegate(self.myself.clone()))
+    }
+
+    /// The shared built-in user content manager, created lazily (it needs the
+    /// live `Servo`). `None` when `mimic_real_browser` is off.
+    fn user_content(&self) -> Option<Rc<UserContentManager>> {
+        if !self.config.mimic_real_browser {
+            return None;
+        }
+        if self.user_content.borrow().is_none() {
+            let manager = Rc::new(UserContentManager::new(&self.servo));
+            manager.add_script(Rc::new(UserScript::new(WEBDRIVER_SHIM.to_owned(), None)));
+            *self.user_content.borrow_mut() = Some(manager);
+        }
+        self.user_content.borrow().clone()
     }
 
     /// One turn of the embedder loop: let Servo run, accept MCP requests and
@@ -226,12 +272,14 @@ impl Browser {
     }
 
     pub fn create_tab(&self, url: Url, foreground: bool) -> Rc<Tab> {
-        let webview = WebViewBuilder::new(&self.servo, self.rendering_context.clone())
+        let mut builder = WebViewBuilder::new(&self.servo, self.rendering_context.clone())
             .url(url)
             .hidpi_scale_factor(self.hidpi_scale.get())
-            .delegate(self.delegate())
-            .build();
-        self.add_tab(webview, foreground)
+            .delegate(self.delegate());
+        if let Some(manager) = self.user_content() {
+            builder = builder.user_content_manager(manager);
+        }
+        self.add_tab(builder.build(), foreground)
     }
 
     fn add_tab(&self, webview: WebView, foreground: bool) -> Rc<Tab> {
@@ -443,6 +491,31 @@ impl Delegate {
 }
 
 impl WebViewDelegate for Delegate {
+    /// Report a plausible desktop screen and window rectangle. Without this,
+    /// `window.screen.width/height`, `window.outerWidth/outerHeight` and
+    /// `availWidth/Height` are all 0 — a reliable "headless" tell that
+    /// automation-detection libraries key on. The size is derived from the
+    /// viewport so it is always at least as large as the content, and rounded
+    /// up to a common desktop resolution.
+    fn screen_geometry(&self, webview: WebView) -> Option<ScreenGeometry> {
+        let view = webview.size();
+        let (view_w, view_h) = (view.width.max(1.0) as i32, view.height.max(1.0) as i32);
+        // A real screen is at least as big as the window and looks like a
+        // common desktop resolution.
+        let screen_w = view_w.max(1920);
+        let screen_h = view_h.max(1080);
+        let size = DeviceIntSize::new(screen_w, screen_h);
+        // Leave room for a taskbar so availHeight < height, as on a real desktop.
+        let available_size = DeviceIntSize::new(screen_w, (screen_h - 40).max(view_h));
+        // The window (with OS decorations) is the viewport plus a title bar and
+        // toolbar, placed a little in from the top-left.
+        let window_rect = DeviceIntRect::from_origin_and_size(
+            servo::DeviceIntPoint::new(0, 0),
+            DeviceIntSize::new(view_w, (view_h + 74).min(screen_h)),
+        );
+        Some(ScreenGeometry { size, available_size, window_rect })
+    }
+
     fn notify_new_frame_ready(&self, webview: WebView) {
         self.with_tab(&webview, |browser, tab| {
             if browser.active.get() == Some(tab.id) {
@@ -492,12 +565,14 @@ impl WebViewDelegate for Delegate {
     fn request_create_new(&self, parent: WebView, request: servo::CreateNewWebViewRequest) {
         // window.open() and target=_blank links open a new foreground tab.
         let Some(browser) = self.0.upgrade() else { return };
-        let webview = request
+        let mut builder = request
             .builder(browser.rendering_context.clone())
             .hidpi_scale_factor(browser.hidpi_scale.get())
-            .delegate(parent.delegate())
-            .build();
-        browser.add_tab(webview, true);
+            .delegate(parent.delegate());
+        if let Some(manager) = browser.user_content() {
+            builder = builder.user_content_manager(manager);
+        }
+        browser.add_tab(builder.build(), true);
     }
 
     fn show_embedder_control(&self, webview: WebView, control: EmbedderControl) {

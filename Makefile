@@ -35,7 +35,7 @@ RUN_FLAGS = --mcp-port $(MCP_PORT) --mcp-host $(MCP_HOST) --size $(SIZE) \
 
 .DEFAULT_GOAL := help
 .PHONY: help deps check-deps build run run-headless test unittests smoke \
-        smoke-headed fmt lint package clean docker-image docker-build
+        smoke-headed bot-detection fmt lint package clean docker-image docker-build
 
 help: ## Show this help.
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / \
@@ -73,7 +73,11 @@ smoke-headed: $(BIN) ## Same, in a window (needs a display, or xvfb-run make smo
 	python3 $(ROOT)/scripts/mcp_smoke_test.py --launch $(BIN) --headed \
 	  --url http://127.0.0.1:$(MCP_PORT)/mcp $(if $(MCP_TOKEN),--token $(MCP_TOKEN))
 
-test: unittests smoke ## Unit tests + smoke test.
+bot-detection: $(BIN) ## Fail if industry-standard detectors identify servoaf as a bot (no CAPTCHAs).
+	python3 $(ROOT)/tests/bot-detection/run.py --launch $(BIN) \
+	  --url http://127.0.0.1:$(MCP_PORT)/mcp $(if $(MCP_TOKEN),--token $(MCP_TOKEN))
+
+test: unittests smoke bot-detection ## Unit tests + smoke test + bot-detection test.
 
 fmt: ## Format the code.
 	$(CARGO) fmt --all

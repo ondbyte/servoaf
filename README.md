@@ -10,14 +10,22 @@ click, type, scroll, manage tabs and answer page dialogs.
 
 To websites it is a normal browser. The control layer:
 
-- does **not** inject or evaluate any script in pages. There is no WebDriver
-  session, no DevTools protocol and no `navigator.webdriver`;
+- does **not** inject or evaluate any script into a page to drive it, and
+  opens no WebDriver session and no DevTools protocol;
 - sends mouse, wheel and keyboard input through `WebView::notify_input_event`,
   the same entry point real OS input takes. Events are hit-tested like real
   ones, and pages see ordinary `isTrusted` events;
 - reads the DOM through Servo's built-in, natively implemented script-thread
   commands (`webdriver_handlers.rs`: query selectors, element rects, text,
   attributes, computed style, page source), called directly from the embedder.
+
+servoaf is not identified as a bot by the common non-CAPTCHA detectors
+(Fingerprint BotD, fpscanner, isbot) or by the classic automation checks — see
+[the bot-detection test](tests/bot-detection/). To get there it ships one small
+built-in user script that sets `navigator.webdriver = false` (the value real
+browsers report; Servo leaves it unset) and reports a real screen and window
+size. The remaining gap is the TLS/JA4 network fingerprint, which comes from
+Servo's rustls stack; that one is documented, not yet closed.
 
 It is a plain Cargo workspace on top of the published
 [`servo` crate](https://crates.io/crates/servo) (0.7.0). There is no Servo
@@ -31,7 +39,8 @@ make deps          # system packages (sudo) + the pinned Rust toolchain
 make build         # cargo build --release  ->  target/release/servoaf
 make run           # window + MCP on http://127.0.0.1:9223/mcp
 make run-headless  # same without a display
-make test          # unit tests + end-to-end smoke test of every tool
+make test          # unit tests + smoke test + bot-detection test
+make bot-detection # fail if industry-standard detectors flag servoaf as a bot
 ```
 
 `make deps` runs `scripts/install-deps.sh`, which supports apt (Debian/Ubuntu),
@@ -53,6 +62,7 @@ target/release/servoaf [options] [URL]
   --size WxH                Window/viewport size in CSS px (default 1280x800)
   --user-data-dir DIR       Keep cookies and storage in DIR (default: temporary)
   --no-cursor-overlay       Don't draw the agent's pointer in the window
+  --no-webdriver-shim       Don't define navigator.webdriver=false (leave it unset like Servo)
   --auto-dismiss-dialogs    Accept alerts, cancel confirm/prompt automatically
   --tool-timeout SECONDS    Give up on a tool call after this long (default 120)
 ```
@@ -209,6 +219,10 @@ It will be packaged with a small Java/Kotlin activity, built with
   notice the read.
 - Media playback (GStreamer) is not enabled. Headless rendering uses software GL.
 - One window; tabs are switched within it.
+- The TLS/JA4 network fingerprint comes from Servo's rustls stack and does not
+  match the Firefox the user agent claims. It can't be changed from this
+  workspace (it lives in Servo's `net` crate); the
+  [bot-detection test](tests/bot-detection/) reports it as a documented gap.
 
 ## License
 
