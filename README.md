@@ -31,6 +31,34 @@ It is a plain Cargo workspace on top of the published
 [`servo` crate](https://crates.io/crates/servo) (0.7.0). There is no Servo
 checkout and no patches.
 
+## Download a prebuilt build (Linux x86-64)
+
+A stripped, self-contained build is checked in under [`dist/`](dist/):
+`dist/servoaf-0.1.0-x86_64-linux.tar.xz` (~32 MB), with a `.sha256` next to it.
+It needs **glibc 2.39 or newer**: Ubuntu 24.04+, Debian 13+, Fedora 40+ or a
+recent Arch.
+
+```sh
+base=https://github.com/ondbyte/servoaf/raw/claude/ecstatic-planck-51szvk/dist
+curl -LO $base/servoaf-0.1.0-x86_64-linux.tar.xz
+curl -LO $base/servoaf-0.1.0-x86_64-linux.tar.xz.sha256
+sha256sum -c servoaf-0.1.0-x86_64-linux.tar.xz.sha256
+tar xf servoaf-0.1.0-x86_64-linux.tar.xz
+cd servoaf-0.1.0-x86_64-linux
+./install.sh                      # -> ~/.local/bin/servoaf (PREFIX=... to change)
+servoaf https://example.com       # window + MCP on http://127.0.0.1:9223/mcp
+```
+
+You can also run `./servoaf` straight from the extracted folder.
+`install.sh` warns about missing runtime libraries. Desktops almost always have
+them; on a minimal system install:
+
+- Debian/Ubuntu: `sudo apt install libegl1 libgl1-mesa-dri libfontconfig1 libfreetype6 libxkbcommon-x11-0`
+- Fedora: `sudo dnf install mesa-libEGL mesa-dri-drivers fontconfig freetype libxkbcommon-x11`
+
+For older distributions or other architectures, build from source as shown
+below. `make package` regenerates the archive.
+
 ## Quick start (Linux)
 
 ```sh
@@ -69,7 +97,7 @@ target/release/servoaf [options] [URL]
 
 Make variables map onto these: `make run MCP_PORT=9333 MCP_TOKEN=secret
 URL=example.com SIZE=1440x900 USER_DATA_DIR=~/.servoaf`. `make package`
-produces `target/servoaf-<version>-<arch>-linux.tar.xz`.
+produces `dist/servoaf-<version>-<arch>-linux.tar.xz` and its `.sha256`.
 
 Without `--user-data-dir` every run starts with a fresh profile, which is
 deleted on exit. The server binds to loopback by default. It rejects requests

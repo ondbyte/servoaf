@@ -86,14 +86,17 @@ lint: ## rustfmt --check + clippy.
 	$(CARGO) fmt --all -- --check
 	$(CARGO) clippy $(CARGO_PROFILE_FLAG) --all-targets -- -D warnings
 
-package: build ## Create target/servoaf-<version>-<arch>-linux.tar.xz.
+package: build ## Create dist/servoaf-<version>-<arch>-linux.tar.xz (+ .sha256) for checking in.
 	@set -e; version=$$(sed -n 's/^version = "\(.*\)"/\1/p' $(ROOT)/Cargo.toml | head -1); \
-	name=servoaf-$$version-$$(uname -m)-linux; dir=$(ROOT)/target/$$name; \
-	rm -rf $$dir && mkdir -p $$dir; \
-	cp $(BIN) $(ROOT)/README.md $(ROOT)/LICENSE $$dir/; \
-	strip $$dir/servoaf || true; \
-	tar -C $(ROOT)/target -cJf $(ROOT)/target/$$name.tar.xz $$name; \
-	echo "package: target/$$name.tar.xz"
+	name=servoaf-$$version-$$(uname -m)-linux; stage=$(ROOT)/target/package/$$name; \
+	rm -rf $(ROOT)/target/package && mkdir -p $$stage $(ROOT)/dist; \
+	cp $(BIN) $(ROOT)/README.md $(ROOT)/LICENSE $$stage/; \
+	cp $(ROOT)/scripts/install.sh $$stage/; \
+	strip $$stage/servoaf; \
+	rm -f $(ROOT)/dist/servoaf-*-linux.tar.xz $(ROOT)/dist/servoaf-*-linux.tar.xz.sha256; \
+	tar -C $(ROOT)/target/package --owner=0 --group=0 -cJf $(ROOT)/dist/$$name.tar.xz $$name; \
+	(cd $(ROOT)/dist && sha256sum $$name.tar.xz > $$name.tar.xz.sha256); \
+	ls -l $(ROOT)/dist/$$name.tar.xz; echo "package: dist/$$name.tar.xz"
 
 clean: ## cargo clean.
 	$(CARGO) clean
