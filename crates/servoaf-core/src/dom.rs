@@ -8,6 +8,7 @@
 //! no WebDriver session exists, so pages cannot observe them. Commands sent in
 //! one batch are answered in order, which keeps large queries fast.
 
+use std::cell::RefCell;
 use std::fmt::Debug;
 use std::time::{Duration, Instant};
 
@@ -22,10 +23,57 @@ use crate::browser::{Browser, Tab};
 use crate::runtime::poll_until;
 
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
-/// How long a poll may block the main thread waiting for the script thread.
-const BLOCKING_SLICE: Duration = Duration::from_millis(20);
 
 pub type DomResult<T> = Result<T, String>;
+
+/// Reply channels whose request we stopped waiting for (timeout, an early
+/// return, or a cancelled tool call) but which the script thread has not
+/// answered yet.
+///
+/// Servo's script thread `unwrap()`s the send of every WebDriver reply. If the
+/// receiving end were dropped, a late answer would panic the script thread and
+/// take down every tab it runs (they are shared per origin). So unanswered
+/// receivers are parked here and dropped only once the answer has arrived or
+/// the sender is gone.
+#[derive(Default)]
+pub struct PendingReplies(RefCell<Vec<Box<dyn FnMut() -> bool>>>);
+
+impl PendingReplies {
+    fn adopt<T: Serialize + DeserializeOwned + 'static>(&self, receiver: GenericReceiver<T>) {
+        self.0
+            .borrow_mut()
+            .push(Box::new(move || !matches!(receiver.try_recv(), Err(TryReceiveError::Empty))));
+    }
+
+    /// Drops the parked receivers that have been answered. Call regularly.
+    pub fn poll(&self) {
+        let mut pending = std::mem::take(&mut *self.0.borrow_mut());
+        pending.retain_mut(|answered| !answered());
+        self.0.borrow_mut().append(&mut pending);
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.borrow().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// A reply receiver that is never closed before its answer arrives.
+struct Reply<'a, T: Serialize + DeserializeOwned + 'static> {
+    receiver: Option<GenericReceiver<T>>,
+    pending: &'a PendingReplies,
+}
+
+impl<T: Serialize + DeserializeOwned + 'static> Drop for Reply<'_, T> {
+    fn drop(&mut self) {
+        if let Some(receiver) = self.receiver.take() {
+            self.pending.adopt(receiver);
+        }
+    }
+}
 
 fn not_answering() -> String {
     "The page did not answer in time (it may be busy or blocked by a dialog; see get-dialogs)".into()
@@ -37,28 +85,28 @@ fn blocked(browser: &Browser, tab: &Tab) -> Option<String> {
         .map(|dialog| format!("The page is paused by an open {dialog}; answer it with respond-dialog first"))
 }
 
-async fn receive<T>(
-    browser: &Browser,
-    tab: &Tab,
-    receiver: GenericReceiver<T>,
-    deadline: Instant,
-) -> DomResult<T>
+async fn receive<T>(browser: &Browser, tab: &Tab, reply: &mut Reply<'_, T>, deadline: Instant) -> DomResult<T>
 where
-    T: Serialize + DeserializeOwned,
+    T: Serialize + DeserializeOwned + 'static,
 {
     poll_until(|| {
+        let receiver = reply.receiver.as_ref()?;
+        // Never block the main thread: the runtime re-polls every few ms.
+        match receiver.try_recv() {
+            Ok(value) => {
+                reply.receiver = None;
+                return Some(Ok(value));
+            },
+            Err(TryReceiveError::ReceiveError(_)) => {
+                reply.receiver = None;
+                return Some(Err("The page went away".into()));
+            },
+            Err(TryReceiveError::Empty) => {},
+        }
         if let Some(error) = blocked(browser, tab) {
             return Some(Err(error));
         }
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            return Some(Err(not_answering()));
-        }
-        match receiver.try_recv_timeout(remaining.min(BLOCKING_SLICE)) {
-            Ok(value) => Some(Ok(value)),
-            Err(TryReceiveError::Empty) => None,
-            Err(TryReceiveError::ReceiveError(_)) => Some(Err("The page went away".into())),
-        }
+        (Instant::now() >= deadline).then(|| Err(not_answering()))
     })
     .await
 }
@@ -75,27 +123,30 @@ pub async fn batch<I, T>(
     build: impl Fn(I, GenericSender<T>) -> WebDriverScriptCommand,
 ) -> DomResult<Vec<DomResult<T>>>
 where
-    T: Serialize + DeserializeOwned,
+    T: Serialize + DeserializeOwned + 'static,
 {
     if let Some(error) = blocked(browser, tab) {
         return Err(error);
     }
     let webview = tab.webview()?;
     let context = BrowsingContextId::from(webview.id());
-    let mut receivers = Vec::new();
+    let pending = browser.pending_replies();
+    let mut replies = Vec::new();
     for item in items {
         let (sender, receiver) = generic_channel::channel().ok_or("Could not create a channel")?;
         browser
             .servo()
             .execute_webdriver_command(WebDriverCommandMsg::ScriptCommand(context, build(item, sender)));
-        receivers.push(receiver);
+        replies.push(Reply { receiver: Some(receiver), pending });
     }
     let deadline = Instant::now() + REPLY_TIMEOUT;
     let started = Instant::now();
-    let count = receivers.len();
-    let mut results = Vec::with_capacity(receivers.len());
-    for receiver in receivers {
-        let result = receive(browser, tab, receiver, deadline).await;
+    let count = replies.len();
+    let mut results = Vec::with_capacity(replies.len());
+    // Replies not consumed below (early return, cancellation) are parked in
+    // `pending` when `replies` is dropped.
+    for reply in replies.iter_mut() {
+        let result = receive(browser, tab, reply, deadline).await;
         if result.is_err() {
             if let Some(error) = blocked(browser, tab) {
                 return Err(error);
@@ -116,7 +167,7 @@ pub async fn one<T>(
     build: impl FnOnce(GenericSender<T>) -> WebDriverScriptCommand,
 ) -> DomResult<T>
 where
-    T: Serialize + DeserializeOwned,
+    T: Serialize + DeserializeOwned + 'static,
 {
     let build = std::cell::Cell::new(Some(build));
     let mut results =
@@ -241,4 +292,35 @@ pub async fn scroll_offset(browser: &Browser, tab: &Tab) -> (f64, f64) {
         }
     }
     (x, y)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abandoned_reply_keeps_channel_open_until_answered() {
+        let pending = PendingReplies::default();
+        let (sender, receiver) = generic_channel::channel::<u32>().expect("channel");
+        // Stop waiting before the answer arrives (timeout / cancelled tool).
+        drop(Reply { receiver: Some(receiver), pending: &pending });
+        assert_eq!(pending.len(), 1);
+        pending.poll();
+        assert_eq!(pending.len(), 1, "still waiting for the answer");
+        // The script thread answers late: the send must still succeed
+        // (Servo unwrap()s it).
+        sender.send(7).expect("late reply must not hit a closed channel");
+        pending.poll();
+        assert!(pending.is_empty(), "dropped once answered");
+    }
+
+    #[test]
+    fn parked_reply_is_dropped_when_sender_goes_away() {
+        let pending = PendingReplies::default();
+        let (sender, receiver) = generic_channel::channel::<u32>().expect("channel");
+        drop(Reply { receiver: Some(receiver), pending: &pending });
+        drop(sender);
+        pending.poll();
+        assert!(pending.is_empty());
+    }
 }

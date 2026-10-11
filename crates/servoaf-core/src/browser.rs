@@ -153,6 +153,7 @@ pub struct Browser {
     /// Built-in user content (the webdriver-correctness script), shared by all
     /// tabs. `None` when `mimic_real_browser` is off.
     user_content: RefCell<Option<Rc<UserContentManager>>>,
+    pending_replies: crate::dom::PendingReplies,
     myself: Weak<Browser>,
     runtime: Runtime,
     protocol: McpProtocol<Browser>,
@@ -198,11 +199,16 @@ impl Browser {
             dialogs: Default::default(),
             next_dialog_id: Cell::new(1),
             user_content: RefCell::new(None),
+            pending_replies: Default::default(),
             myself: myself.clone(),
             runtime: Runtime::default(),
             protocol,
             requests,
         })
+    }
+
+    pub fn pending_replies(&self) -> &crate::dom::PendingReplies {
+        &self.pending_replies
     }
 
     pub fn servo(&self) -> &Servo {
@@ -242,7 +248,14 @@ impl Browser {
                 let _ = request.reply.send(reply);
             });
         }
-        self.runtime.poll()
+        let deadline = self.runtime.poll();
+        self.pending_replies.poll();
+        if self.pending_replies.is_empty() {
+            return deadline;
+        }
+        // Keep checking parked replies until the script thread has answered.
+        let soon = Instant::now() + Duration::from_millis(50);
+        Some(deadline.map_or(soon, |deadline| deadline.min(soon)))
     }
 
     // Tabs ---------------------------------------------------------------
