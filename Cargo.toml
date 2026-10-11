@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/servoaf-core", "crates/servoaf"]
+members = ["crates/servoaf-core", "crates/servoaf-shell"]
 
 [workspace.package]
 version = "0.1.0"

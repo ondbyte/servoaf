@@ -29,13 +29,13 @@ RUN_ARGS ?=
 DOCKER_IMAGE ?= servoaf-build
 
 CARGO_PROFILE_FLAG := $(if $(filter release,$(PROFILE)),--release,--profile $(PROFILE))
-RUN_FLAGS = --mcp-port $(MCP_PORT) --mcp-host $(MCP_HOST) --size $(SIZE) \
+RUN_FLAGS = --mcp-port $(MCP_PORT) --mcp-host $(MCP_HOST) --window-size $(SIZE) \
   $(if $(MCP_TOKEN),--mcp-token $(MCP_TOKEN)) \
   $(if $(USER_DATA_DIR),--user-data-dir $(USER_DATA_DIR)) $(RUN_ARGS) $(URL)
 
 .DEFAULT_GOAL := help
 .PHONY: help deps check-deps build run run-headless test unittests smoke \
-        smoke-headed bot-detection fmt lint package clean docker-image docker-build
+        smoke-headed bot-detection regressions fmt lint package clean docker-image docker-build
 
 help: ## Show this help.
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / \
@@ -77,14 +77,23 @@ bot-detection: $(BIN) ## Fail if industry-standard detectors identify servoaf as
 	python3 $(ROOT)/tests/bot-detection/run.py --launch $(BIN) \
 	  --url http://127.0.0.1:$(MCP_PORT)/mcp $(if $(MCP_TOKEN),--token $(MCP_TOKEN))
 
-test: unittests smoke bot-detection ## Unit tests + smoke test + bot-detection test.
+regressions: $(BIN) ## Regression tests (e.g. abandoned DOM requests must not crash a tab).
+	python3 $(ROOT)/tests/regressions/abandoned_dom_reply.py --launch $(BIN)
 
-fmt: ## Format the code.
-	$(CARGO) fmt --all
+test: unittests smoke regressions bot-detection ## Unit, smoke, regression and bot-detection tests.
+
+# The vendored servoshell keeps upstream's formatting (see
+# crates/servoaf-shell/VENDORED.md); only servoaf's own code is formatted.
+FMT_FILES = $(ROOT)/crates/servoaf-shell/mcp.rs
+
+fmt: ## Format servoaf's own code.
+	$(CARGO) fmt -p servoaf-core
+	rustfmt --edition 2024 $(FMT_FILES)
 
 lint: ## rustfmt --check + clippy.
-	$(CARGO) fmt --all -- --check
-	$(CARGO) clippy $(CARGO_PROFILE_FLAG) --all-targets -- -D warnings
+	$(CARGO) fmt -p servoaf-core -- --check
+	rustfmt --edition 2024 --check $(FMT_FILES)
+	$(CARGO) clippy $(CARGO_PROFILE_FLAG) -p servoaf-core --all-targets -- -D warnings
 
 package: build ## Create dist/servoaf-<version>-<arch>-linux.tar.xz (+ .sha256) for checking in.
 	@set -e; version=$$(sed -n 's/^version = "\(.*\)"/\1/p' $(ROOT)/Cargo.toml | head -1); \

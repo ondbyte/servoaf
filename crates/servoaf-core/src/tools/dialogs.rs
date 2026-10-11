@@ -4,43 +4,40 @@
 //! get-dialogs and respond-dialog.
 //!
 //! Servo hands page dialogs (alert/confirm/prompt), `<select>` popups, context
-//! menus, file and color pickers to the embedder instead of drawing them. They
-//! are kept here until the agent answers them. Blocking dialogs pause the
-//! page's script until answered.
+//! menus, file and color pickers to the browser shell, which shows them to the
+//! person. The agent sees and answers the same dialogs. Blocking dialogs pause
+//! the page's scripts until answered.
 
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use serde_json::{Value, json};
-use servo::{ContextMenuItem, EmbedderControl, RgbColor, SelectElementOptionOrOptgroup, SimpleDialog};
+use servo::{ContextMenuItem, RgbColor, SelectElementOptionOrOptgroup};
 
 use super::{TAB_ID_ARG, resolve_tab};
-use crate::browser::{Browser, Dialog};
+use crate::browser::Browser;
+use crate::host::ControlSlot;
 use crate::mcp::registry::{Args, SchemaBuilder, ToolRegistry, ToolResult, int_arg, string_arg};
 
-fn describe(dialog: &Dialog) -> Value {
-    let mut info = json!({"dialog_id": dialog.id, "tab_id": dialog.tab_id});
-    match &dialog.control {
-        EmbedderControl::SimpleDialog(simple) => {
-            let kind = match simple {
-                SimpleDialog::Alert(_) => "alert",
-                SimpleDialog::Confirm(_) => "confirm",
-                SimpleDialog::Prompt(_) => "prompt",
-            };
-            info["type"] = kind.into();
-            info["message"] = simple.message().into();
-            info["blocking"] = true.into();
-            if let SimpleDialog::Prompt(prompt) = simple {
-                info["default_value"] = prompt.current_value().into();
-            }
+fn describe(id: u32, tab_id: u32, slot: &ControlSlot<'_>) -> Value {
+    let mut info = json!({"dialog_id": id, "tab_id": tab_id, "type": slot.kind()});
+    if slot.blocks_page() {
+        info["blocking"] = true.into();
+    }
+    match slot {
+        ControlSlot::Alert(Some(dialog)) => info["message"] = dialog.message().into(),
+        ControlSlot::Confirm(Some(dialog)) => info["message"] = dialog.message().into(),
+        ControlSlot::Prompt(Some(dialog)) => {
+            info["message"] = dialog.message().into();
+            info["default_value"] = dialog.current_value().into();
         },
-        EmbedderControl::SelectElement(select) => {
-            info["type"] = "select".into();
+        ControlSlot::Select(Some(select)) => {
             let mut options = Vec::new();
             for entry in select.options() {
                 match entry {
-                    SelectElementOptionOrOptgroup::Option(option) => options
-                        .push(json!({"option_id": option.id, "label": option.label, "disabled": option.is_disabled})),
+                    SelectElementOptionOrOptgroup::Option(option) => options.push(
+                        json!({"option_id": option.id, "label": option.label, "disabled": option.is_disabled}),
+                    ),
                     SelectElementOptionOrOptgroup::Optgroup { label, options: group } => {
                         for option in group {
                             options.push(json!({
@@ -55,8 +52,7 @@ fn describe(dialog: &Dialog) -> Value {
             info["selected"] = select.selected_options().into();
             info["multiple"] = select.allow_select_multiple().into();
         },
-        EmbedderControl::ContextMenu(menu) => {
-            info["type"] = "context-menu".into();
+        ControlSlot::ContextMenu(Some(menu)) => {
             let items: Vec<Value> = menu
                 .items()
                 .iter()
@@ -69,33 +65,29 @@ fn describe(dialog: &Dialog) -> Value {
                 .collect();
             info["items"] = items.into();
         },
-        EmbedderControl::FilePicker(picker) => {
-            info["type"] = "file-picker".into();
-            info["blocking"] = true.into();
+        ControlSlot::File(Some(picker)) => {
             info["multiple"] = picker.allow_select_multiple().into();
             let patterns: Vec<&str> = picker.filter_patterns().iter().map(|p| p.0.as_str()).collect();
             info["accept"] = patterns.into();
         },
-        EmbedderControl::ColorPicker(picker) => {
-            info["type"] = "color-picker".into();
+        ControlSlot::Color(Some(picker)) => {
             if let Some(color) = picker.current_color() {
                 info["color"] = format!("#{:02x}{:02x}{:02x}", color.red, color.green, color.blue).into();
             }
         },
-        EmbedderControl::InputMethod(_) => info["type"] = "input-method".into(),
+        _ => {},
     }
     info
 }
 
 async fn get_dialogs(browser: Rc<Browser>, args: Args) -> ToolResult {
     let tab_filter = int_arg(&args, TAB_ID_ARG);
-    let dialogs: Vec<Value> = browser
-        .dialogs
-        .borrow()
-        .iter()
-        .filter(|dialog| tab_filter.is_none_or(|tab| tab == dialog.tab_id as i64))
-        .map(describe)
-        .collect();
+    let mut dialogs = Vec::new();
+    browser.visit_dialogs(|id, tab_id, slot| {
+        if tab_filter.is_none_or(|tab| tab == tab_id as i64) {
+            dialogs.push(describe(id, tab_id, &slot));
+        }
+    });
     ToolResult::json(json!({"count": dialogs.len(), "dialogs": dialogs}))
 }
 
@@ -108,24 +100,24 @@ fn parse_color(text: &str) -> Option<RgbColor> {
     Some(RgbColor { red: channel(0)?, green: channel(2)?, blue: channel(4)? })
 }
 
-fn respond(dialog: Dialog, args: &Args) -> Result<String, Box<(Dialog, String)>> {
+/// Answers the dialog in `slot` (taking its control) or explains why not,
+/// leaving it open.
+fn respond(slot: ControlSlot<'_>, args: &Args) -> Result<String, String> {
     let action = string_arg(args, "action").unwrap_or("accept");
     let accept = match action {
         "accept" => true,
         "dismiss" => false,
-        other => return Err(Box::new((dialog, format!("Unknown action: {other} (use accept or dismiss)")))),
+        other => return Err(format!("Unknown action: {other} (use accept or dismiss)")),
     };
-    let Dialog { id, tab_id, control } = dialog;
-    match control {
-        EmbedderControl::SimpleDialog(SimpleDialog::Alert(alert)) => alert.confirm(),
-        EmbedderControl::SimpleDialog(SimpleDialog::Confirm(confirm)) => {
-            if accept {
-                confirm.confirm()
-            } else {
-                confirm.dismiss()
-            }
+    let gone = || "The dialog was already answered".to_owned();
+    match slot {
+        ControlSlot::Alert(slot) => slot.take().ok_or_else(gone)?.confirm(),
+        ControlSlot::Confirm(slot) => {
+            let confirm = slot.take().ok_or_else(gone)?;
+            if accept { confirm.confirm() } else { confirm.dismiss() }
         },
-        EmbedderControl::SimpleDialog(SimpleDialog::Prompt(mut prompt)) => {
+        ControlSlot::Prompt(slot) => {
+            let mut prompt = slot.take().ok_or_else(gone)?;
             if accept {
                 if let Some(text) = string_arg(args, "text") {
                     prompt.set_current_value(text);
@@ -135,17 +127,18 @@ fn respond(dialog: Dialog, args: &Args) -> Result<String, Box<(Dialog, String)>>
                 prompt.dismiss();
             }
         },
-        EmbedderControl::SelectElement(mut select) => {
+        ControlSlot::Select(slot) => {
+            let mut select = slot.take().ok_or_else(gone)?;
             if accept && let Some(ids) = args.get("option_ids").and_then(Value::as_array) {
-                let ids: Vec<usize> = ids.iter().filter_map(Value::as_u64).map(|id| id as usize).collect();
-                select.select(ids);
+                select.select(ids.iter().filter_map(Value::as_u64).map(|id| id as usize).collect());
             }
             // Dismissing keeps the current selection.
             select.submit();
         },
-        EmbedderControl::ContextMenu(menu) => {
-            let wanted = string_arg(args, "item");
-            let action = wanted.filter(|_| accept).and_then(|wanted| {
+        ControlSlot::ContextMenu(slot) => {
+            let menu = slot.as_ref().ok_or_else(gone)?;
+            let wanted = string_arg(args, "item").filter(|_| accept);
+            let chosen = wanted.and_then(|wanted| {
                 menu.items().iter().find_map(|item| match item {
                     ContextMenuItem::Item { label, action, enabled: true }
                         if label.eq_ignore_ascii_case(wanted) =>
@@ -155,19 +148,14 @@ fn respond(dialog: Dialog, args: &Args) -> Result<String, Box<(Dialog, String)>>
                     _ => None,
                 })
             });
-            match (action, wanted.filter(|_| accept)) {
-                (Some(action), _) => menu.select(action),
-                (None, Some(wanted)) => {
-                    let message = format!("No enabled menu item labelled {wanted:?}");
-                    return Err(Box::new((
-                        Dialog { id, tab_id, control: EmbedderControl::ContextMenu(menu) },
-                        message,
-                    )));
-                },
-                (None, None) => menu.dismiss(),
+            match (chosen, wanted) {
+                (Some(action), _) => slot.take().ok_or_else(gone)?.select(action),
+                (None, Some(wanted)) => return Err(format!("No enabled menu item labelled {wanted:?}")),
+                (None, None) => slot.take().ok_or_else(gone)?.dismiss(),
             }
         },
-        EmbedderControl::FilePicker(mut picker) => {
+        ControlSlot::File(slot) => {
+            let mut picker = slot.take().ok_or_else(gone)?;
             let paths: Vec<PathBuf> = args
                 .get("paths")
                 .and_then(Value::as_array)
@@ -180,43 +168,48 @@ fn respond(dialog: Dialog, args: &Args) -> Result<String, Box<(Dialog, String)>>
                 picker.dismiss();
             }
         },
-        EmbedderControl::ColorPicker(mut picker) => {
+        ControlSlot::Color(slot) => {
+            let mut picker = slot.take().ok_or_else(gone)?;
             if accept && let Some(color) = string_arg(args, "text").and_then(parse_color) {
                 picker.select(Some(color));
             }
             picker.submit();
         },
-        EmbedderControl::InputMethod(_) => {},
     }
-    Ok(format!("{action}ed dialog {id}"))
+    Ok(format!("{action}ed"))
 }
 
 async fn respond_dialog(browser: Rc<Browser>, args: Args) -> ToolResult {
-    let id = match int_arg(&args, "dialog_id") {
-        Some(id) => id as u32,
-        None => {
+    let wanted_id = int_arg(&args, "dialog_id").map(|id| id as u32);
+    let wanted_tab = if wanted_id.is_none() {
+        match resolve_tab(&browser, &args) {
+            Ok(tab) => Some(tab.id),
+            Err(error) => return ToolResult::error(error),
+        }
+    } else {
+        None
+    };
+    let mut outcome: Option<(u32, u32, Result<String, String>)> = None;
+    browser.visit_dialogs(|id, tab_id, slot| {
+        let matches = match wanted_id {
+            Some(wanted) => id == wanted,
             // The oldest dialog of the tab.
-            let tab = match resolve_tab(&browser, &args) {
-                Ok(tab) => tab,
-                Err(error) => return ToolResult::error(error),
-            };
-            let found = browser.dialogs.borrow().iter().find(|d| d.tab_id == tab.id).map(|d| d.id);
-            match found {
-                Some(id) => id,
-                None => return ToolResult::error(format!("Tab {} has no open dialog", tab.id)),
-            }
-        },
-    };
-    let Some(dialog) = browser.take_dialog(id) else {
-        return ToolResult::error(format!("No dialog with id {id}; see get-dialogs"));
-    };
-    let tab_id = dialog.tab_id;
-    match respond(dialog, &args) {
-        Ok(message) => ToolResult::json(json!({"dialog_id": id, "tab_id": tab_id, "result": message})),
-        Err(error) => {
-            let (dialog, message) = *error;
-            browser.dialogs.borrow_mut().insert(0, dialog);
-            ToolResult::error(message)
+            None => Some(tab_id) == wanted_tab,
+        };
+        if outcome.is_none() && matches {
+            outcome = Some((id, tab_id, respond(slot, &args)));
+        }
+    });
+    browser.request_paint();
+    match outcome {
+        Some((id, tab_id, Ok(message))) => ToolResult::json(
+            json!({"dialog_id": id, "tab_id": tab_id, "result": format!("{message} dialog {id}")}),
+        ),
+        Some((_, _, Err(message))) => ToolResult::error(message),
+        None => match (wanted_id, wanted_tab) {
+            (Some(id), _) => ToolResult::error(format!("No dialog with id {id}; see get-dialogs")),
+            (None, Some(tab)) => ToolResult::error(format!("Tab {tab} has no open dialog")),
+            _ => ToolResult::error("No dialog to answer"),
         },
     }
 }

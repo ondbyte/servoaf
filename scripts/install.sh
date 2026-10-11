@@ -36,8 +36,8 @@ for lib in libEGL.so.1 libGL.so.1 libxkbcommon.so.0; do
 done
 if [[ -n "${missing// /}" ]]; then
   warn "missing runtime libraries: ${missing}"
-  warn "Debian/Ubuntu: sudo apt install libegl1 libgl1-mesa-dri libfontconfig1 libfreetype6 libxkbcommon-x11-0"
-  warn "Fedora:        sudo dnf install mesa-libEGL mesa-dri-drivers fontconfig freetype libxkbcommon-x11"
+  warn "Debian/Ubuntu: sudo apt install libegl1 libgl1-mesa-dri libfontconfig1 libfreetype6 libxkbcommon-x11-0 libudev1 libcap2"
+  warn "Fedora:        sudo dnf install mesa-libEGL mesa-dri-drivers fontconfig freetype libxkbcommon-x11 systemd-libs libcap"
 fi
 
 mkdir -p "${BIN_DIR}"

@@ -65,7 +65,9 @@ async fn create_tab(browser: Rc<Browser>, args: Args) -> ToolResult {
         },
         None => Url::parse("about:blank").expect("valid"),
     };
-    let tab = browser.create_tab(url, bool_arg(&args, "foreground").unwrap_or(true));
+    let Some(tab) = browser.create_tab(url, bool_arg(&args, "foreground").unwrap_or(true)) else {
+        return ToolResult::error("Could not open a tab");
+    };
     // The new WebView has not started loading yet.
     reply_after_load(&browser, &tab, Some(0), &args).await
 }

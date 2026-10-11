@@ -1,0 +1,136 @@
+# Vendored from Servo v0.7.0 ports/servoshell (see VENDORED.md); workspace
+# dependencies resolved to the versions pinned by Servo 0.7.0.
+[package]
+name = "servoaf"
+build = "build.rs"
+version.workspace = true
+edition = "2024"
+license = "MPL-2.0"
+repository.workspace = true
+rust-version = "1.88.0"
+description = "Servo browser (servoshell) with a built-in MCP control server"
+publish = false
+
+[lib]
+name = "servoshell"
+path = "lib.rs"
+bench = false
+
+[[bin]]
+name = "servoaf"
+path = "main.rs"
+bench = false
+
+[build-dependencies]
+cc = { version = "1.2" }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = { version = "0.1" }
+
+[features]
+default = ["default_without_allocator", "servo-allocator/use-jemalloc"]
+default_without_allocator = ["bundled", "default_web_features", "max_log_level", "multiprocess", "js_jit"]
+default_web_features = ["servo/default_web_features", "gamepad", "webgpu", "webgl", "webxr"]
+bundled = ["servo/bundled"]
+baked-in-resources = ["servo/baked-in-resources"]
+bundled_freetype = ["servo/bundled_freetype"]
+crown = ["servo/crown"]
+debugmozjs = ["servo/debugmozjs"]
+gamepad = ["servo/gamepad"]
+jitspew = ["servo/jitspew"]
+js_backtrace = ["servo/js_backtrace"]
+js_jit = ["servo/js_jit"]
+max_log_level = ["log/release_max_level_info"]
+media-gstreamer = ["servo/media-gstreamer"]
+multiprocess = ["servo/multiprocess"]
+native-bluetooth = ["servo/native-bluetooth"]
+profilemozjs = ["servo/profilemozjs"]
+tracing = ["dep:tracing", "dep:tracing-subscriber", "servo/tracing"]
+tracing-hitrace = ["tracing", "dep:hitrace"]
+tracing-perfetto = ["tracing", "dep:tracing-perfetto"]
+vello = ["servo/vello"]
+webgl_backtrace = ["servo/webgl_backtrace"]
+webgl = ["servo/webgl"]
+webgpu = ["servo/webgpu"]
+webxr = ["servo/webxr"]
+
+[dependencies]
+# servoaf: MCP control server.
+servoaf-core = { path = "../servoaf-core" }
+accesskit = { version = "0.24.0", features = ["serde"] }
+bpaf = { version = "0.9.26", features = ["derive"] }
+cfg-if = { version = "1.0.4" }
+crossbeam-channel = { version = "0.5" }
+dpi = { version = "0.1" }
+euclid = { version = "0.22" }
+hitrace = { version = "0.2.0", features = ["api-19", "tracing-rs"], optional = true }
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "ico", "jpeg", "png", "rayon", "webp"] }
+keyboard-types = { version = "0.8.3", features = ["serde", "webdriver"] }
+libc = { version = "0.2" }
+log = { version = "0.4.32" }
+mime_guess = { version = "2.0.5" }
+raw-window-handle = { version = "0.6" }
+rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "logging", "std", "tls12"] }
+servo = { version = "=0.7.0", default-features = false, features = ["background_hang_monitor", "bluetooth"] }
+tokio = { version = "1" }
+tracing = { version = "0.1.44", optional = true }
+tracing-perfetto = { version = "0.1.5", optional = true }
+tracing-subscriber = { version = "0.3.23", optional = true, features = ["env-filter"] }
+url = { version = "2.5" }
+webdriver_server = { package = "servo-webdriver-server", version = "=0.7.0" }
+
+[target.'cfg(target_os = "android")'.dependencies]
+android_logger = { version = "0.15" }
+jni = { version = "0.22" }
+servo-allocator = { version = "=0.7.0", features = ["use-jemalloc"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+backtrace = { version = "0.3" }
+
+[target.'cfg(target_env = "ohos")'.dependencies]
+env_filter = { version = "0.1.4" }
+euclid = { version = "0.22" }
+hilog = { version = "0.2.2" }
+ipc-channel = { version = "0.23", features = ["force-inprocess"] }
+napi-derive-ohos = { version = "1.2.0" }
+napi-ohos = { version = "1.2.0" }
+ohos-abilitykit-sys = { version = "0.1.6", features = ["api-14"] }
+ohos-deviceinfo = { version = "0.1.0" }
+ohos-ime = { version = "0.4.2" }
+ohos-ime-sys = { version = "0.2.4" }
+ohos-vsync = { version = "0.1.3" }
+ohos-window-sys = { version = "0.1.7" }
+ohos-sys-opaque-types = { version = "0.1.7" }
+ohos-window-manager-sys = { version = "0.1", features = ["api-14"] }
+xcomponent-sys = { version = "0.4.0", features = ["api-20", "keyboard-types"] }
+
+[target.'cfg(any(target_os = "android", target_env = "ohos"))'.dependencies]
+nix = { version = "0.30", features = ["fs"] }
+serde_json = { version = "1.0" }
+servo-base = { version = "=0.7.0" }
+surfman = { version = "0.14.0", features = ["sm-angle-default"] }
+
+[target.'cfg(not(any(target_os = "android", target_env = "ohos")))'.dependencies]
+dirs = { version = "7.0" }
+egui = { version = "0.34.3" }
+egui-file-dialog = { version = "0.13.0" }
+egui-winit = { version = "0.34.3", default-features = false, features = ["accesskit", "clipboard", "wayland"] }
+egui_glow = { version = "0.34.3", features = ["winit"] }
+gilrs = { version = "0.11.1" }
+glow = { version = "0.17.0" }
+headers = { version = "0.4" }
+serde_json = { version = "1.0" }
+servo-allocator = { version = "=0.7.0" }
+surfman = { version = "0.14.0", features = ["sm-x11"] }
+winit = { version = "0.30.13" }
+
+[target.'cfg(any(all(target_os = "linux", not(target_env = "ohos")), target_os = "macos"))'.dependencies]
+signal-hook-registry = { version = "1.4.8" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+servo = { version = "=0.7.0", default-features = false, features = ["no-wgl"] }
+windows-sys = { version = "0.61", features = ["Win32_Graphics_Gdi", "Win32_System_Console"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSColorSpace", "NSResponder", "NSView", "NSWindow"] }
+objc2-foundation = { version = "0.3.1", default-features = false, features = ["std"] }

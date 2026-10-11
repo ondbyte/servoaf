@@ -1,7 +1,10 @@
 # servoaf
 
-**servoaf** is a [Servo](https://servo.org)-based browser with a **Model Context
-Protocol (MCP) server built in**. It is the Servo sibling of
+**servoaf** is Servo's own browser, [servoshell](https://github.com/servo/servo/tree/main/ports/servoshell),
+with a **Model Context Protocol (MCP) server built in**. You get the full
+browser (URL bar, tabs, back/forward/reload, dialogs, file pickers, the same
+engine features and performance as servoshell), and an AI agent can drive the
+same window over MCP at the same time. It is the Servo sibling of
 [chromeaf](https://github.com/ondbyte/chromeaf): the same MCP tools, with the
 same names, arguments and results, on a different engine. An AI agent (or a
 script, or a person with `curl`) can drive the browser over HTTP. It can read
@@ -28,8 +31,11 @@ size. The remaining gap is the TLS/JA4 network fingerprint, which comes from
 Servo's rustls stack; that one is documented, not yet closed.
 
 It is a plain Cargo workspace on top of the published
-[`servo` crate](https://crates.io/crates/servo) (0.7.0). There is no Servo
-checkout and no patches.
+[`servo` crates](https://crates.io/crates/servo) (0.7.0): servoshell is vendored
+from Servo v0.7.0 with small, marked patches (see
+[`crates/servoaf-shell/VENDORED.md`](crates/servoaf-shell/VENDORED.md)), built with
+the same features as servoshell (WebGL, WebCrypto, WebXR, gamepad, jemalloc, …)
+and Servo's own `Cargo.lock`. There is no Servo checkout and no engine patches.
 
 ## Download a prebuilt build (Linux x86-64)
 
@@ -53,8 +59,8 @@ You can also run `./servoaf` straight from the extracted folder.
 `install.sh` warns about missing runtime libraries. Desktops almost always have
 them; on a minimal system install:
 
-- Debian/Ubuntu: `sudo apt install libegl1 libgl1-mesa-dri libfontconfig1 libfreetype6 libxkbcommon-x11-0`
-- Fedora: `sudo dnf install mesa-libEGL mesa-dri-drivers fontconfig freetype libxkbcommon-x11`
+- Debian/Ubuntu: `sudo apt install libegl1 libgl1-mesa-dri libfontconfig1 libfreetype6 libxkbcommon-x11-0 libudev1 libcap2`
+- Fedora: `sudo dnf install mesa-libEGL mesa-dri-drivers fontconfig freetype libxkbcommon-x11 systemd-libs libcap`
 
 If an older build printed `xkbcommon: ERROR: …/iso8859-1/Compose … not a
 valid UTF-8 string`, your locale has no `.UTF-8` suffix (check with `locale`).
@@ -73,40 +79,48 @@ make deps          # system packages (sudo) + the pinned Rust toolchain
 make build         # cargo build --release  ->  target/release/servoaf
 make run           # window + MCP on http://127.0.0.1:9223/mcp
 make run-headless  # same without a display
-make test          # unit tests + smoke test + bot-detection test
+make test          # unit, smoke, regression and bot-detection tests
 make bot-detection # fail if industry-standard detectors flag servoaf as a bot
 ```
 
 `make deps` runs `scripts/install-deps.sh`, which supports apt (Debian/Ubuntu),
 dnf (Fedora) and pacman (Arch). Use `make check-deps` to only report what is
-missing. The first build compiles Servo and takes a while: about 30 minutes on
-4 cores, 8+ GB RAM and ~6 GB of disk for `target/`. Later builds of
+missing. The first build compiles Servo and takes a while: about 45 minutes on
+4 cores, 8+ GB RAM and ~10 GB of disk for `target/`. Later builds of
 servoaf itself take seconds. `make docker-build` builds inside an Ubuntu 24.04
 image instead.
 
-The result is a single self-contained binary (Servo's resources are baked in):
+The result is a single self-contained binary (Servo's resources are baked in).
+It takes all of servoshell's options (`servoaf --help`), plus the MCP ones:
 
 ```sh
 target/release/servoaf [options] [URL]
 
-  --mcp-port PORT           Serve MCP on http://HOST:PORT/mcp (default 9223; 0 disables)
-  --mcp-host HOST           Address to bind (default 127.0.0.1)
-  --mcp-token TOKEN         Require 'Authorization: Bearer TOKEN' (or $SERVOAF_MCP_TOKEN)
-  --headless                No window; render offscreen (no display needed)
-  --size WxH                Window/viewport size in CSS px (default 1280x800)
-  --user-data-dir DIR       Keep cookies and storage in DIR (default: temporary)
-  --no-cursor-overlay       Don't draw the agent's pointer in the window
+  --mcp-port=PORT           Serve MCP on http://HOST:PORT/mcp (default 9223; 0 disables)
+  --mcp-host=HOST           Address to bind (default 127.0.0.1)
+  --mcp-token=TOKEN         Require 'Authorization: Bearer TOKEN' (or $SERVOAF_MCP_TOKEN)
+  --no-cursor-overlay       Don't draw the agent's pointer over the page
   --no-webdriver-shim       Don't define navigator.webdriver=false (leave it unset like Servo)
   --auto-dismiss-dialogs    Accept alerts, cancel confirm/prompt automatically
-  --tool-timeout SECONDS    Give up on a tool call after this long (default 120)
+  --tool-timeout=SECONDS    Give up on a tool call after this long (default 120)
+  --user-data-dir=DIR       Profile directory (alias of servoshell's --config-dir)
+
+  servoshell's own, e.g.:
+  -z, --headless            No window; render offscreen (no display needed)
+  --window-size=WxH         Initial window size (default 1024x740)
+  --config-dir=DIR          Profile directory (default ~/.config/servo/default)
+  --pref=NAME[=VALUE]       Set a Servo preference, e.g. --pref=dom_webgpu_enabled
 ```
 
 Make variables map onto these: `make run MCP_PORT=9333 MCP_TOKEN=secret
 URL=example.com SIZE=1440x900 USER_DATA_DIR=~/.servoaf`. `make package`
 produces `dist/servoaf-<version>-<arch>-linux.tar.xz` and its `.sha256`.
 
-Without `--user-data-dir` every run starts with a fresh profile, which is
-deleted on exit. The server binds to loopback by default. It rejects requests
+Like servoshell, servoaf keeps its profile (cookies, storage) in
+`~/.config/servo/default` unless `--user-data-dir`/`--config-dir` says
+otherwise. Everything the agent does happens in the visible window and tabs:
+tabs it opens appear in the tab strip, tabs you open show up in `get-tabs`, and
+dialogs it answers close in the UI. The server binds to loopback by default. It rejects requests
 whose `Host`/`Origin` is not loopback (DNS-rebinding protection) and can
 require a bearer token. **Anyone who can reach the port controls the browser**,
 so only bind elsewhere with a token, behind a firewall. Set `RUST_LOG=warn` (or
@@ -192,14 +206,18 @@ Makefile                    entry point (make help)
 scripts/install-deps.sh     system packages + Rust toolchain
 scripts/mcp_smoke_test.py   end-to-end test of every tool (stdlib only)
 Dockerfile                  Ubuntu 24.04 build image
-crates/servoaf-core/        platform-independent library (no windowing)
+crates/servoaf-core/        platform-independent MCP library (no windowing)
   src/mcp/                  Streamable HTTP transport, JSON-RPC/MCP protocol, tool registry
-  src/browser.rs            Servo, tabs (one WebView each), WebViewDelegate, pending dialogs
+  src/host.rs               what the browser shell provides: tabs, dialogs (Host trait)
+  src/browser.rs            per-tab automation state, events from the shell, MCP pump
   src/dom.rs                DOM reads through Servo's native script-thread commands
   src/input/                human mouse-path model, key mapping, input injection
   src/tools/                tab, page, screenshot, input and dialog tools
-  src/runtime.rs            single-threaded executor driven by the embedder loop
-crates/servoaf/             Linux binary: CLI, winit window, headless loop
+  src/runtime.rs            single-threaded executor driven by the shell's event loop
+crates/servoaf-shell/       the servoaf binary: servoshell v0.7.0 + MCP (VENDORED.md)
+  mcp.rs                    Host implementation over servoshell's windows, tabs, dialogs
+tests/regressions/          crash regressions (abandoned DOM requests)
+tests/bot-detection/        bot-detection test suite
 ```
 
 ## Architecture
@@ -212,31 +230,26 @@ crates/servoaf/             Linux binary: CLI, winit window, headless loop
                                                         │
              ┌──────────────────────┬───────────────────┼─────────────────────┐
              ▼                      ▼                   ▼                     ▼
-        Browser / tabs         dom.rs  ──Servo──►  script thread       input/*
-        (WebView per tab,      WebDriverScriptCommand (native Rust,   WebView::
-         WebViewDelegate)      no page JS)                             notify_input_event
+     Host (servoshell's      dom.rs  ──Servo──►  script thread       input/*
+     windows, tabs,          WebDriverScriptCommand (native Rust,   WebView::
+     dialogs: mcp.rs)        no page JS)                             notify_input_event
 ```
 
 Servo's `WebView`s live on the main thread, so tool calls run as futures on a
-small executor that the embedder's event loop polls (`Browser::pump`). The
-Linux binary provides that loop twice:
-
-- **Windowed** (`headed.rs`): winit and `WindowRenderingContext`. A person can
-  use the window at the same time; mouse and keyboard are forwarded to the page.
-- **Headless** (`headless.rs`): `SoftwareRenderingContext`, Mesa llvmpipe.
+small executor that servoshell's event loop polls each turn (`Browser::pump`,
+woken by the HTTP server and a timer thread). servoshell owns the windows,
+tabs and dialogs; servoaf-core reaches them through the `Host` trait and keeps
+only automation state (cursor, clickable ids, load tracking) per tab. Windowed
+mode is servoshell's winit + egui UI; `--headless` is its offscreen software
+renderer (Mesa llvmpipe).
 
 ## Android (planned)
 
-`servoaf-core` has no windowing dependency on purpose. The Android port will
-add a `crates/servoaf-android` cdylib, following servoshell's `egl/` port:
-
-- a JNI entry point;
-- a `WindowRenderingContext` on the `SurfaceView`;
-- an event loop that calls `Browser::pump`;
-- the same MCP server, reached with `adb forward tcp:9223 tcp:9223`.
-
-It will be packaged with a small Java/Kotlin activity, built with
-`cargo ndk` + Gradle.
+The vendored servoshell already contains Servo's Android/OpenHarmony port
+(`crates/servoaf-shell/egl/`), and `servoaf-core` has no windowing dependency.
+The Android build will hook the same `Mcp` attachment into that port's event
+loop, package it with Servo's Android app shell (`cargo ndk` + Gradle), and
+reach the MCP server with `adb forward tcp:9223 tcp:9223`.
 
 ## Limitations
 
@@ -251,8 +264,9 @@ It will be packaged with a small Java/Kotlin activity, built with
 - The scroll offset is read from the root element's `scrollTop`/`scrollLeft`
   properties. A page that overrides those getters on `Element.prototype` could
   notice the read.
-- Media playback (GStreamer) is not enabled. Headless rendering uses software GL.
-- One window; tabs are switched within it.
+- Media playback (GStreamer) is not enabled, as in default servoshell builds.
+  Headless rendering uses software GL.
+- `get-tabs` lists the tabs of all windows under one `window_id`.
 - The TLS/JA4 network fingerprint comes from Servo's rustls stack and does not
   match the Firefox the user agent claims. It can't be changed from this
   workspace (it lives in Servo's `net` crate); the
