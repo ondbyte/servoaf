@@ -605,6 +605,10 @@ struct CmdArgs {
     #[bpaf(long("no-webdriver-shim"))]
     no_webdriver_shim: bool,
 
+    /// servoaf: don't print the pages' console messages to the terminal.
+    #[bpaf(long("quiet-console"))]
+    quiet_console: bool,
+
     /// servoaf: accept alerts and cancel confirm/prompt dialogs automatically.
     #[bpaf(long("auto-dismiss-dialogs"))]
     auto_dismiss_dialogs: bool,
@@ -779,6 +783,7 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
                 mimic_real_browser: !cmd_args.no_webdriver_shim,
                 tool_timeout: std::time::Duration::from_secs(cmd_args.tool_timeout.max(1)),
             },
+            quiet_console: cmd_args.quiet_console,
         },
         #[cfg(target_env = "ohos")]
         log_filter: cmd_args.log_filter.or_else(|| {

@@ -40,7 +40,7 @@ and Servo's own `Cargo.lock`. There is no Servo checkout and no engine patches.
 ## Download a prebuilt build (Linux x86-64)
 
 A stripped, self-contained build is checked in under [`dist/`](dist/):
-`dist/servoaf-0.1.0-x86_64-linux.tar.xz` (~32 MB), with a `.sha256` next to it.
+`dist/servoaf-0.1.0-x86_64-linux.tar.xz` (~37 MB), with a `.sha256` next to it.
 It needs **glibc 2.39 or newer**: Ubuntu 24.04+, Debian 13+, Fedora 40+ or a
 recent Arch.
 
@@ -81,6 +81,7 @@ make run           # window + MCP on http://127.0.0.1:9223/mcp
 make run-headless  # same without a display
 make test          # unit, smoke, regression and bot-detection tests
 make bot-detection # fail if industry-standard detectors flag servoaf as a bot
+make perf          # input latency / fps / CPU on a heavy page (UPSTREAM=servoshell to compare)
 ```
 
 `make deps` runs `scripts/install-deps.sh`, which supports apt (Debian/Ubuntu),
@@ -103,6 +104,7 @@ target/release/servoaf [options] [URL]
   --no-webdriver-shim       Don't define navigator.webdriver=false (leave it unset like Servo)
   --auto-dismiss-dialogs    Accept alerts, cancel confirm/prompt automatically
   --tool-timeout=SECONDS    Give up on a tool call after this long (default 120)
+  --quiet-console           Don't print the pages' console messages
   --user-data-dir=DIR       Profile directory (alias of servoshell's --config-dir)
 
   servoshell's own, e.g.:
@@ -114,7 +116,9 @@ target/release/servoaf [options] [URL]
 
 Make variables map onto these: `make run MCP_PORT=9333 MCP_TOKEN=secret
 URL=example.com SIZE=1440x900 USER_DATA_DIR=~/.servoaf`. `make package`
-produces `dist/servoaf-<version>-<arch>-linux.tar.xz` and its `.sha256`.
+builds with `PROFILE=production` (whole-program LTO, like Servo's official
+builds; slow to build) and produces `dist/servoaf-<version>-<arch>-linux.tar.xz`
+and its `.sha256`.
 
 Like servoshell, servoaf keeps its profile (cookies, storage) in
 `~/.config/servo/default` unless `--user-data-dir`/`--config-dir` says
@@ -216,7 +220,9 @@ crates/servoaf-core/        platform-independent MCP library (no windowing)
   src/runtime.rs            single-threaded executor driven by the shell's event loop
 crates/servoaf-shell/       the servoaf binary: servoshell v0.7.0 + MCP (VENDORED.md)
   mcp.rs                    Host implementation over servoshell's windows, tabs, dialogs
-tests/regressions/          crash regressions (abandoned DOM requests)
+tests/regressions/          crash regressions (abandoned DOM requests, timers vs GC)
+tests/perf/                 responsiveness benchmark against upstream servoshell
+vendor/                     Servo crates with upstream fixes backported (see vendor/README.md)
 tests/bot-detection/        bot-detection test suite
 ```
 
@@ -250,6 +256,49 @@ The vendored servoshell already contains Servo's Android/OpenHarmony port
 The Android build will hook the same `Mcp` attachment into that port's event
 loop, package it with Servo's Android app shell (`cargo ndk` + Gradle), and
 reach the MCP server with `adb forward tcp:9223 tcp:9223`.
+
+## Performance and stability
+
+servoaf is servoshell (Servo's own browser) plus the MCP server, built from the
+same Servo 0.7.0 crates with the same features. `make perf UPSTREAM=...` runs
+[`tests/perf/responsiveness.py`](tests/perf/responsiveness.py) to compare it
+with an unmodified servoshell. The test opens a heavy single-page-app stand-in,
+types into it with `xdotool` like a person, and measures key-to-`keydown`
+latency, frame rate, event-loop lag and CPU. Measured on a 4-core VM with
+software GL (Xvfb), median of 4 interleaved runs:
+
+| Page | Browser | fps | key latency p50 / p95 | CPU | Crashed |
+|---|---|---|---|---|---|
+| idle (`--load 0`) | servoshell 0.7.0 | 33 | 20 / 33 ms | 2 % | 0 / 1 |
+| idle (`--load 0`) | servoaf | 33 | 19 / 32 ms | 2 % | 0 / 1 |
+| busy app (`--load 1`) | servoshell 0.7.0 | 2 | 2.3 / 6.6 s | 331 % | **3 / 4** |
+| busy app (`--load 1`) | servoaf | 12 | 1.7 / 3.4 s | 226 % | 0 / 4 |
+| busy app (`--load 1`) | servoaf, MCP client connected | 12 | 0.9 / 3.2 s | 236 % | 0 / 4 |
+
+- **servoaf adds no input or rendering overhead.** On an idle page the two are
+  identical. With the MCP server idle, servoaf's code does no work and never
+  wakes the event loop.
+- **Servo 0.7.0 itself crashes on timer-heavy pages.** A GC-rooting bug in its
+  timer code segfaults the page's script thread (`Caught signal 11 in thread
+  "Script#1"`), which takes down the whole browser. servoaf ships the upstream
+  fix ([vendor/](vendor/README.md), servo/servo#48548), and
+  [`tests/regressions/timer_gc_crash.py`](tests/regressions/timer_gc_crash.py)
+  crashes unpatched servoshell within a second.
+- **Heavy sites are still slow in Servo.** Under load, input waits behind
+  Servo's layout and painting, so a key press can take seconds to reach the
+  page. That is the same in servoshell; a real GPU helps a lot compared with
+  the software GL measured here. Sites such as Instagram are at the edge of
+  what Servo handles today.
+- Prebuilt archives use the `production` profile: whole-program LTO and one
+  codegen unit, like Servo's official builds.
+
+If servoaf exits, it says why on stderr: `servoaf: closing a window: ...`, `tab
+closed by the page or engine: URL`, `Caught signal ...` with a backtrace for a
+crash, and `servoaf: exited` at the end. Page console messages print once, or
+not at all with `--quiet-console`. Messages such as Instagram's `ErrorUtils
+caught an error ... UNAUTHENTICATED` come from the site's own JavaScript (its
+live-update connection is refused while logged out). They are not browser
+errors.
 
 ## Limitations
 

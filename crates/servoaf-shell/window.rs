@@ -161,6 +161,11 @@ impl ServoShellWindow {
         self.webview_collection.borrow().is_empty() || self.close_scheduled.get()
     }
 
+    /// servoaf: the person closed the window (as opposed to its last tab closing).
+    pub(crate) fn close_requested(&self) -> bool {
+        self.close_scheduled.get()
+    }
+
     pub(crate) fn webview_by_id(&self, id: WebViewId) -> Option<WebView> {
         self.webview_collection.borrow().get(id).cloned()
     }

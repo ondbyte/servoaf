@@ -464,6 +464,18 @@ impl RunningAppState {
             if !self.exit_scheduled.get() && (!window.should_close() || keep_empty) {
                 return true;
             }
+            // servoaf: say why a window goes away; when it is the last one,
+            // servoaf exits and this is the only trace of why.
+            eprintln!(
+                "servoaf: closing a window: {}",
+                if self.exit_scheduled.get() {
+                    "quitting"
+                } else if window.close_requested() {
+                    "the window was closed"
+                } else {
+                    "its last tab was closed"
+                }
+            );
 
             if let Some(focused_window) = self.focused_window() &&
                 Rc::ptr_eq(window, &focused_window)
@@ -856,6 +868,15 @@ impl WebViewDelegate for RunningAppState {
 
     fn notify_closed(&self, webview: WebView) {
         let webview_id = webview.id();
+        // servoaf: a tab the shell still shows was closed by the page or engine.
+        if let Some(window) = self.maybe_window_for_webview(&webview) &&
+            window.webview_by_id(webview_id).is_some()
+        {
+            eprintln!(
+                "servoaf: tab closed by the page or engine: {}",
+                webview.url().map_or_else(String::new, |url| url.to_string())
+            );
+        }
         self.pending_webdriver_events
             .borrow_mut()
             .retain(|_, (pending_webview_id, _)| *pending_webview_id != webview_id);

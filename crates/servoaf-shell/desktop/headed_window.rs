@@ -71,6 +71,8 @@ pub struct HeadedWindow {
     fullscreen: Cell<bool>,
     fullscreen_from_document: Cell<bool>,
     device_pixel_ratio_override: Option<f32>,
+    /// servoaf: `--quiet-console`.
+    quiet_console: bool,
     xr_window_poses: RefCell<Vec<Rc<XRWindowPose>>>,
     modifiers_state: Cell<ModifiersState>,
     /// The `RenderingContext` of Servo itself. This is used to render Servo results
@@ -202,6 +204,7 @@ impl HeadedWindow {
             inner_size: Cell::new(inner_size),
             screen_size,
             device_pixel_ratio_override: servoshell_preferences.device_pixel_ratio_override,
+            quiet_console: servoshell_preferences.mcp.quiet_console, // servoaf
             xr_window_poses: RefCell::new(vec![]),
             modifiers_state: Cell::new(ModifiersState::empty()),
             window_rendering_context,
@@ -1168,8 +1171,12 @@ impl PlatformWindow for HeadedWindow {
     }
 
     fn show_console_message(&self, level: servo::ConsoleLogLevel, message: &str) {
-        println!("{message}");
-        log::log!(level.into(), "{message}");
+        // servoaf: print each message once. Upstream also logs it at its own
+        // level, which shows errors a second time as `ERROR servoshell::...`.
+        if !self.quiet_console {
+            println!("{message}");
+        }
+        log::debug!("console.{level:?}: {message}");
     }
 
     fn notify_accessibility_tree_update(

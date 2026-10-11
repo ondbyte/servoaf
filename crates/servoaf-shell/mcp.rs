@@ -27,6 +27,8 @@ pub struct McpPreferences {
     /// `None` disables the server.
     pub http: Option<HttpOptions>,
     pub config: BrowserConfig,
+    /// Don't print page console messages (`--quiet-console`).
+    pub quiet_console: bool,
 }
 
 impl Default for McpPreferences {
@@ -34,6 +36,7 @@ impl Default for McpPreferences {
         Self {
             http: None,
             config: BrowserConfig::default(),
+            quiet_console: false,
         }
     }
 }

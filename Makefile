@@ -2,7 +2,7 @@
 #
 # Quick start (Linux):
 #   make deps          # system packages (sudo) + Rust toolchain
-#   make build         # cargo build --release
+#   make build         # cargo build --release (PROFILE=production for shipped builds)
 #   make run           # window, MCP on http://127.0.0.1:$(MCP_PORT)/mcp
 #   make run-headless  # no display needed
 #   make test          # unit tests + end-to-end smoke test (headless)
@@ -16,7 +16,7 @@ ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 CARGO ?= cargo
 PROFILE ?= release
 JOBS ?= $(shell nproc)
-BIN := $(ROOT)/target/$(PROFILE)/servoaf
+BIN = $(ROOT)/target/$(PROFILE)/servoaf
 
 MCP_PORT ?= 9223
 MCP_HOST ?= 127.0.0.1
@@ -28,14 +28,14 @@ RUN_ARGS ?=
 
 DOCKER_IMAGE ?= servoaf-build
 
-CARGO_PROFILE_FLAG := $(if $(filter release,$(PROFILE)),--release,--profile $(PROFILE))
+CARGO_PROFILE_FLAG = $(if $(filter release,$(PROFILE)),--release,--profile $(PROFILE))
 RUN_FLAGS = --mcp-port $(MCP_PORT) --mcp-host $(MCP_HOST) --window-size $(SIZE) \
   $(if $(MCP_TOKEN),--mcp-token $(MCP_TOKEN)) \
   $(if $(USER_DATA_DIR),--user-data-dir $(USER_DATA_DIR)) $(RUN_ARGS) $(URL)
 
 .DEFAULT_GOAL := help
 .PHONY: help deps check-deps build run run-headless test unittests smoke \
-        smoke-headed bot-detection regressions fmt lint package clean docker-image docker-build
+        smoke-headed bot-detection regressions perf fmt lint package clean docker-image docker-build
 
 help: ## Show this help.
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / \
@@ -77,10 +77,17 @@ bot-detection: $(BIN) ## Fail if industry-standard detectors identify servoaf as
 	python3 $(ROOT)/tests/bot-detection/run.py --launch $(BIN) \
 	  --url http://127.0.0.1:$(MCP_PORT)/mcp $(if $(MCP_TOKEN),--token $(MCP_TOKEN))
 
-regressions: $(BIN) ## Regression tests (e.g. abandoned DOM requests must not crash a tab).
+regressions: $(BIN) ## Regression tests (abandoned DOM requests, timers vs GC).
 	python3 $(ROOT)/tests/regressions/abandoned_dom_reply.py --launch $(BIN)
+	python3 $(ROOT)/tests/regressions/timer_gc_crash.py --launch $(BIN)
 
 test: unittests smoke regressions bot-detection ## Unit, smoke, regression and bot-detection tests.
+
+UPSTREAM ?=
+perf: $(BIN) ## Input latency/fps/CPU on a heavy page; UPSTREAM=path/to/servoshell compares with Servo.
+	python3 $(ROOT)/tests/perf/responsiveness.py \
+	  $(if $(UPSTREAM),--browser "upstream=$(UPSTREAM)" --max-ratio 1.5) \
+	  --browser "servoaf=$(BIN) --mcp-port 0" --browser "servoaf+mcp=$(BIN) --mcp-port $(MCP_PORT)"
 
 # The vendored servoshell keeps upstream's formatting (see
 # crates/servoaf-shell/VENDORED.md); only servoaf's own code is formatted.
@@ -95,7 +102,8 @@ lint: ## rustfmt --check + clippy.
 	rustfmt --edition 2024 --check $(FMT_FILES)
 	$(CARGO) clippy $(CARGO_PROFILE_FLAG) -p servoaf-core --all-targets -- -D warnings
 
-package: build ## Create dist/servoaf-<version>-<arch>-linux.tar.xz (+ .sha256) for checking in.
+package: PROFILE = production
+package: build ## Build with PROFILE=production and create dist/servoaf-<version>-<arch>-linux.tar.xz (+ .sha256).
 	@set -e; version=$$(sed -n 's/^version = "\(.*\)"/\1/p' $(ROOT)/Cargo.toml | head -1); \
 	name=servoaf-$$version-$$(uname -m)-linux; stage=$(ROOT)/target/package/$$name; \
 	rm -rf $(ROOT)/target/package && mkdir -p $$stage $(ROOT)/dist; \

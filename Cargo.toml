@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/servoaf-core", "crates/servoaf-shell"]
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -28,3 +29,17 @@ env_logger = "0.11"
 
 [profile.release]
 debug = false
+
+# What the prebuilt archives use: like Servo's own `production` builds
+# (whole-program LTO, one codegen unit), but optimized for speed, not size.
+# Slow to build; use plain --release while developing.
+[profile.production]
+inherits = "release"
+debug-assertions = false
+lto = true
+codegen-units = 1
+opt-level = 3
+
+# Servo 0.7.0 crates with fixes backported from upstream Servo; see vendor/README.md.
+[patch.crates-io]
+servo-script = { path = "vendor/servo-script" }

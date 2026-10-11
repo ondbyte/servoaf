@@ -53,6 +53,8 @@ pub fn main() {
         let mut app = App::new(opts, preferences, servoshell_preferences, &event_loop);
         event_loop.run_app(&mut app);
     }
+    // servoaf: the window system can also end the event loop; make every exit visible.
+    eprintln!("servoaf: exited");
 
     crate::platform::deinit(clean_shutdown)
 }
