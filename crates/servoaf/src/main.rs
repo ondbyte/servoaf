@@ -189,7 +189,42 @@ pub fn browser_for(
     browser
 }
 
+/// The locale libxkbcommon will use for the keyboard Compose table, if it is
+/// not a UTF-8 one, gets a UTF-8 replacement for this process.
+///
+/// winit loads the Compose (dead-key) table for `LC_ALL`, else `LC_CTYPE`, else
+/// `LANG`. A non-UTF-8 locale name such as `en_US` maps to
+/// `iso8859-1/Compose`, which current libxkbcommon refuses to parse, printing a
+/// screen of "xkbcommon: ERROR" lines and disabling Compose/dead keys. Servo
+/// takes the page language from `LANGUAGE`/`LC_ALL`/`LC_MESSAGES`/`LANG`, so
+/// overriding `LC_CTYPE` (or only the charset of `LC_ALL`) leaves
+/// `navigator.language` unchanged.
+fn use_utf8_compose_locale() {
+    let get = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+    let (variable, value) = match get("LC_ALL") {
+        Some(value) => ("LC_ALL", value),
+        None => match get("LC_CTYPE").or_else(|| get("LANG")) {
+            Some(value) => ("LC_CTYPE", value),
+            None => return, // "C": xkbcommon handles it.
+        },
+    };
+    let lower = value.to_ascii_lowercase();
+    if lower == "c" || lower == "posix" || lower.contains("utf-8") || lower.contains("utf8") {
+        return;
+    }
+    // en_US.ISO-8859-1@euro -> en_US.UTF-8, if libX11 knows that locale.
+    let base = value.split(['.', '@']).next().unwrap_or_default();
+    let candidate = format!("{base}.UTF-8");
+    let known = std::fs::read_to_string("/usr/share/X11/locale/compose.dir")
+        .map(|dir| dir.lines().any(|line| line.split_whitespace().nth(1) == Some(candidate.as_str())))
+        .unwrap_or(false);
+    let replacement = if known { candidate } else { "C.UTF-8".to_owned() };
+    // SAFETY: called first thing in main(), before any other thread exists.
+    unsafe { std::env::set_var(variable, &replacement) };
+}
+
 fn main() -> ExitCode {
+    use_utf8_compose_locale();
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("error")).init();
     let options = match parse_args() {
         Ok(options) => options,

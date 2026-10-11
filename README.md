@@ -56,6 +56,12 @@ them; on a minimal system install:
 - Debian/Ubuntu: `sudo apt install libegl1 libgl1-mesa-dri libfontconfig1 libfreetype6 libxkbcommon-x11-0`
 - Fedora: `sudo dnf install mesa-libEGL mesa-dri-drivers fontconfig freetype libxkbcommon-x11`
 
+If an older build printed `xkbcommon: ERROR: …/iso8859-1/Compose … not a
+valid UTF-8 string`, your locale has no `.UTF-8` suffix (check with `locale`).
+That only disabled dead keys in the window. Current builds switch the
+keyboard locale to UTF-8 automatically; you can also set
+`LANG=en_US.UTF-8` (or your language's `.UTF-8` locale).
+
 For older distributions or other architectures, build from source as shown
 below. `make package` regenerates the archive.
 
